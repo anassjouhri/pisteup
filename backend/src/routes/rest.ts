@@ -1,3 +1,4 @@
+import { query, queryOne, pool } from '../config/db'
 import { Router, type Response } from 'express'
 import { z } from 'zod'
 import { query, queryOne } from '../config/db'
@@ -41,10 +42,21 @@ feedRouter.post('/', requireAuth, async (req: AuthRequest, res: Response) => {
     tags:         z.array(z.string()).max(10).default([]),
   }).safeParse(req.body)
   if (!p.success) { res.status(400).json({ message: 'Validation error', errors: p.error.errors }); return }
+
   const { content, lat, lng, locationName, countryCode, tags } = p.data
-  const post = await queryOne(
-    `INSERT INTO posts(author_id,content,lat,lng,location_name,country_code,tags) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+
+  // Insert and get the id
+  const { rows } = await pool.query(
+    `INSERT INTO posts(author_id,content,lat,lng,location_name,country_code,tags)
+     VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
     [req.userId, content, lat, lng, locationName, countryCode, tags]
+  )
+  const id = rows[0].id
+
+  // Fetch full post with author joined — same shape as GET /feed
+  const post = await queryOne(
+    `SELECT ${POST_COLS} FROM posts p JOIN users u ON u.id=p.author_id WHERE p.id=$1`,
+    [id]
   )
   res.status(201).json(post)
 })

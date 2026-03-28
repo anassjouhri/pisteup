@@ -41,7 +41,6 @@ export function MapPage() {
     if (justCreatedId === report.id) return
     setAddAt(null)
     setSelectedReport(report)
-    // Fly the map to the report's location
     mapViewRef.current?.flyTo(report.lng, report.lat)
   }
 
@@ -60,10 +59,7 @@ export function MapPage() {
           reports={reports}
           onReportsLoad={setReports}
           onReportClick={handleReportClick}
-          onMapClick={(lat, lng) => {
-            setSelectedReport(null)
-            setAddAt({ lat, lng })
-          }}
+          onMapClick={(lat, lng) => { setSelectedReport(null); setAddAt({ lat, lng }) }}
         />
         {selectedReport && (
           <ReportPopup report={selectedReport} onClose={() => setSelectedReport(null)} />
@@ -86,6 +82,12 @@ export function MapPage() {
 
 export function FeedPage() {
   const { posts, hasMore, isLoading, page, setPosts, appendPosts, setHasMore, setPage, setLoading } = useFeedStore()
+  const { user } = useAuthStore()
+  const [showCompose, setShowCompose] = useState(false)
+  const [content, setContent]         = useState('')
+  const [tags, setTags]               = useState('')
+  const [posting, setPosting]         = useState(false)
+  const [postError, setPostError]     = useState('')
 
   useEffect(() => {
     setLoading(true)
@@ -94,6 +96,28 @@ export function FeedPage() {
       .catch(console.error)
       .finally(() => setLoading(false))
   }, [])
+
+  async function handlePost(e: FormEvent) {
+    e.preventDefault()
+    if (!content.trim()) return
+    setPosting(true); setPostError('')
+    try {
+      const tagList = tags.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean)
+      const { data } = await feedApi.create({ content: content.trim(), tags: tagList })
+      // Guard: only prepend if the response has a valid author
+      if (data && data.author) {
+        useFeedStore.getState().setPosts([data, ...useFeedStore.getState().posts])
+      } else {
+        // Backend returned raw row without author — reload the feed instead
+        const { data: fresh } = await feedApi.list({ page: 1 })
+        setPosts(fresh.data); setHasMore(fresh.hasMore)
+      }
+      setContent(''); setTags(''); setShowCompose(false)
+    } catch (err) {
+      console.error(err)
+      setPostError('Failed to post. Please try again.')
+    } finally { setPosting(false) }
+  }
 
   function loadMore() {
     if (isLoading || !hasMore) return
@@ -111,18 +135,105 @@ export function FeedPage() {
     )
   }
 
+  const inp: React.CSSProperties = {
+    width: '100%', padding: '10px 12px', borderRadius: 6, fontSize: 13,
+    border: '1px solid rgba(200,169,110,0.2)', background: 'rgba(255,255,255,0.04)',
+    color: '#E8E0D0', boxSizing: 'border-box',
+  }
+
   return (
-    <div style={{ maxWidth: 680, margin: '0 auto', padding: '24px 16px' }}>
-      {posts.map(p => <PostCard key={p.id} post={p} onVote={handleVote} />)}
-      {isLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}><Spinner /></div>}
-      {hasMore && !isLoading && (
-        <button onClick={loadMore} style={{ width: '100%', padding: 12, borderRadius: 8, fontSize: 13, border: '1px solid rgba(200,169,110,0.2)', background: 'transparent', color: '#C8A96E', cursor: 'pointer' }}>
-          Load more
-        </button>
-      )}
-      {!hasMore && posts.length === 0 && !isLoading && (
-        <p style={{ textAlign: 'center', color: '#6A5A48', fontSize: 13, padding: 48 }}>No posts yet. Be the first!</p>
-      )}
+    // height: 100% + overflowY: auto makes this page scroll independently
+    // while the map page stays overflow: hidden
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ maxWidth: 680, margin: '0 auto', padding: '24px 16px' }}>
+
+        {/* Compose button */}
+        {!showCompose && (
+          <button
+            onClick={() => setShowCompose(true)}
+            style={{
+              width: '100%', padding: '12px 16px', borderRadius: 8, marginBottom: 20,
+              border: '1px dashed rgba(200,169,110,0.3)', background: 'rgba(200,169,110,0.04)',
+              color: '#8A7A66', fontSize: 13, cursor: 'pointer', textAlign: 'left',
+              transition: 'border-color 0.15s, color 0.15s',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(200,169,110,0.6)'; (e.currentTarget as HTMLButtonElement).style.color = '#C8A96E' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(200,169,110,0.3)'; (e.currentTarget as HTMLButtonElement).style.color = '#8A7A66' }}
+          >
+            ✏️ Share a trip update, road condition, or question…
+          </button>
+        )}
+
+        {/* Compose form */}
+        {showCompose && (
+          <form onSubmit={handlePost} style={{
+            background: '#261C14', border: '1px solid rgba(200,169,110,0.2)',
+            borderRadius: 8, padding: 16, marginBottom: 20,
+            display: 'flex', flexDirection: 'column', gap: 10,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: '50%', background: 'rgba(232,98,42,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 12, fontWeight: 700, color: '#E8622A', flexShrink: 0,
+              }}>
+                {user?.display_name?.slice(0, 2).toUpperCase() ?? 'ME'}
+              </div>
+              <span style={{ fontSize: 13, color: '#C8A96E', fontWeight: 500 }}>
+                {user?.display_name ?? 'You'}
+              </span>
+            </div>
+            <textarea
+              placeholder="Share a trip update, road condition, question, or experience…"
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              rows={4}
+              style={{ ...inp, resize: 'vertical' }}
+              autoFocus
+              required
+            />
+            <input
+              placeholder="Tags — comma separated (e.g. Morocco, piste, 4x4)"
+              value={tags}
+              onChange={e => setTags(e.target.value)}
+              style={inp}
+            />
+            {postError && <p style={{ color: '#CC5555', fontSize: 12, margin: 0 }}>{postError}</p>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <Button variant="ghost" onClick={() => { setShowCompose(false); setContent(''); setTags(''); setPostError('') }}>
+                Cancel
+              </Button>
+              <Button variant="primary" loading={posting} disabled={!content.trim()}>
+                Post
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {posts.map(p => <PostCard key={p.id} post={p} onVote={handleVote} />)}
+
+        {isLoading && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
+            <Spinner />
+          </div>
+        )}
+
+        {hasMore && !isLoading && (
+          <button onClick={loadMore} style={{
+            width: '100%', padding: 12, borderRadius: 8, fontSize: 13,
+            border: '1px solid rgba(200,169,110,0.2)', background: 'transparent',
+            color: '#C8A96E', cursor: 'pointer',
+          }}>
+            Load more
+          </button>
+        )}
+
+        {!hasMore && posts.length === 0 && !isLoading && (
+          <p style={{ textAlign: 'center', color: '#6A5A48', fontSize: 13, padding: 48 }}>
+            No posts yet. Be the first!
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -147,12 +258,14 @@ export function ProfilePage() {
   if (!user)   return <div style={{ padding: 48, color: '#8A7A66', textAlign: 'center' }}>User not found</div>
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto', padding: '24px 16px' }}>
-      <ProfileHeader user={user} />
-      <h2 style={{ fontSize: 13, fontWeight: 600, color: '#7A6A58', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 14 }}>Trips</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-        {trips.map(t => <TripCard key={t.id} trip={t} />)}
-        {trips.length === 0 && <p style={{ color: '#6A5A48', fontSize: 13 }}>No trips logged yet.</p>}
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ maxWidth: 860, margin: '0 auto', padding: '24px 16px' }}>
+        <ProfileHeader user={user} />
+        <h2 style={{ fontSize: 13, fontWeight: 600, color: '#7A6A58', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 14 }}>Trips</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          {trips.map(t => <TripCard key={t.id} trip={t} />)}
+          {trips.length === 0 && <p style={{ color: '#6A5A48', fontSize: 13 }}>No trips logged yet.</p>}
+        </div>
       </div>
     </div>
   )

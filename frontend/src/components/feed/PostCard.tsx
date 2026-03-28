@@ -17,7 +17,11 @@ export function PostCard({ post, onVote }: { post: Post; onVote?: (id: string, u
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px 8px' }}>
         <Avatar user={post.author} />
         <div>
-          <div style={{ fontSize: 13, fontWeight: 500, color: '#D4C9B5' }}>{post.author.displayName}</div>
+
+          <div style={{ fontSize: 13, fontWeight: 500, color: '#D4C9B5' }}>
+            {post.author?.displayName ?? 'Unknown'}
+          </div>
+
           <div style={{ fontSize: 11, color: '#7A6A58' }}>
             {post.location_name && `📍 ${post.location_name} · `}{formatRelative(post.created_at)}
           </div>
