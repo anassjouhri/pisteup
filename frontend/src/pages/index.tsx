@@ -1,6 +1,6 @@
-import { useState, useEffect, type FormEvent } from 'react'
+import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { MapView } from '@/components/map/MapView'
+import { MapView, type MapViewHandle } from '@/components/map/MapView'
 import { MapSidebar } from '@/components/map/MapSidebar'
 import { ReportPopup, AddReportModal } from '@/components/map/ReportModals'
 import { PostCard } from '@/components/feed/PostCard'
@@ -14,11 +14,12 @@ import type { Report, ReportType, User, Trip } from '@/types'
 // ── MapPage ───────────────────────────────────
 
 export function MapPage() {
-  const [reports, setReports]           = useState<Report[]>([])
-  const [activeTypes, setActiveTypes]   = useState<ReportType[]>(['road','border','camp','fuel','mechanic','hazard'])
+  const mapViewRef                          = useRef<MapViewHandle>(null)
+  const [reports, setReports]               = useState<Report[]>([])
+  const [activeTypes, setActiveTypes]       = useState<ReportType[]>(['road','border','camp','fuel','mechanic','hazard'])
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
-  const [addAt, setAddAt]               = useState<{ lat: number; lng: number } | null>(null)
-  const [justCreatedId, setJustCreatedId] = useState<string | null>(null)
+  const [addAt, setAddAt]                   = useState<{ lat: number; lng: number } | null>(null)
+  const [justCreatedId, setJustCreatedId]   = useState<string | null>(null)
 
   function toggleType(t: ReportType) {
     setActiveTypes(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
@@ -31,15 +32,17 @@ export function MapPage() {
 
   function handleReportCreated(report: Report) {
     setReports(prev => [report, ...prev])
-    setAddAt(null)                    // close modal first
-    setJustCreatedId(report.id)       // mark as just created
-    setTimeout(() => setJustCreatedId(null), 500)  // allow clicking after 500ms
+    setAddAt(null)
+    setJustCreatedId(report.id)
+    setTimeout(() => setJustCreatedId(null), 500)
   }
 
   function handleReportClick(report: Report) {
-    if (justCreatedId === report.id) return  // ignore click on freshly created report
-    setAddAt(null)                           // ensure add modal is closed
+    if (justCreatedId === report.id) return
+    setAddAt(null)
     setSelectedReport(report)
+    // Fly the map to the report's location
+    mapViewRef.current?.flyTo(report.lng, report.lat)
   }
 
   return (
@@ -53,11 +56,12 @@ export function MapPage() {
       />
       <div style={{ flex: 1, position: 'relative' }}>
         <MapView
+          ref={mapViewRef}
           reports={reports}
           onReportsLoad={setReports}
           onReportClick={handleReportClick}
           onMapClick={(lat, lng) => {
-            setSelectedReport(null)   // close popup before opening modal
+            setSelectedReport(null)
             setAddAt({ lat, lng })
           }}
         />
@@ -127,8 +131,8 @@ export function FeedPage() {
 
 export function ProfilePage() {
   const { username } = useParams<{ username: string }>()
-  const [user, setUser]   = useState<User | null>(null)
-  const [trips, setTrips] = useState<Trip[]>([])
+  const [user, setUser]       = useState<User | null>(null)
+  const [trips, setTrips]     = useState<Trip[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -140,7 +144,7 @@ export function ProfilePage() {
   }, [username])
 
   if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={32} /></div>
-  if (!user) return <div style={{ padding: 48, color: '#8A7A66', textAlign: 'center' }}>User not found</div>
+  if (!user)   return <div style={{ padding: 48, color: '#8A7A66', textAlign: 'center' }}>User not found</div>
 
   return (
     <div style={{ maxWidth: 860, margin: '0 auto', padding: '24px 16px' }}>
@@ -200,7 +204,7 @@ export function LoginPage() {
 // ── RegisterPage ──────────────────────────────
 
 export function RegisterPage() {
-  const [form, setForm] = useState({ username: '', email: '', password: '', displayName: '', vehicle: '' })
+  const [form, setForm]     = useState({ username: '', email: '', password: '', displayName: '', vehicle: '' })
   const [error, setError]   = useState('')
   const [loading, setLoading] = useState(false)
   const { setAuth } = useAuthStore()
