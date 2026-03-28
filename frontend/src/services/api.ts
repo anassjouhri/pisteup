@@ -58,6 +58,10 @@ export const reportsApi = {
     api.post<{ upvotes: number; downvotes: number }>(`/reports/${id}/vote`, { value }),
 }
 
+export type ReactionType = 'helpful' | 'inspiring' | 'wow'
+export interface ReactionCounts { helpful: number; inspiring: number; wow: number }
+export interface ReactionsResponse { counts: ReactionCounts; userReaction: ReactionType | null }
+
 export const feedApi = {
   list: (params?: Record<string, unknown>) =>
     api.get<PaginatedResponse<Post>>('/feed', { params }),
@@ -66,9 +70,17 @@ export const feedApi = {
   delete: (id: string) => api.delete(`/feed/${id}`),
   vote: (id: string, value: 1 | -1 | 0) =>
     api.post<{ upvotes: number }>(`/feed/${id}/vote`, { value }),
+  getReactions: (id: string) =>
+    api.get<ReactionsResponse>(`/feed/${id}/reactions`),
+  react: (id: string, type: ReactionType) =>
+    api.post<ReactionsResponse>(`/feed/${id}/reactions`, { type }),
+  unreact: (id: string) =>
+    api.delete<ReactionsResponse>(`/feed/${id}/reactions`),
   comments: (id: string) => api.get<Comment[]>(`/feed/${id}/comments`),
   addComment: (id: string, content: string) =>
     api.post<Comment>(`/feed/${id}/comments`, { content }),
+  deleteComment: (postId: string, commentId: string) =>
+    api.delete(`/feed/${postId}/comments/${commentId}`),
 }
 
 export const usersApi = {
@@ -89,9 +101,52 @@ export const tripsApi = {
 
 export const geoApi = {
   search: (q: string, lat?: number, lng?: number) =>
-    api.get('/geo/search', { params: { q, lat, lng } }),
+    api.get<{ name: string; coords: { lat: number; lng: number }; type: string }[]>(
+      '/geo/search', { params: { q, lat, lng } }
+    ),
   reverse: (lat: number, lng: number) =>
     api.get('/geo/reverse', { params: { lat, lng } }),
 }
 
 export default api
+
+export type SurfaceType = 'paved' | 'unpaved' | 'mixed' | 'offroad' | 'sand' | 'gravel' | 'mud'
+export type Difficulty  = 'easy' | 'moderate' | 'hard' | 'extreme'
+
+export interface Track {
+  id:               string
+  title:            string
+  description:      string | null
+  distance_km:      number
+  elevation_gain_m: number | null
+  point_count:      number
+  surface_type:     SurfaceType | null
+  difficulty:       Difficulty | null
+  bbox_sw_lat:      number
+  bbox_sw_lng:      number
+  bbox_ne_lat:      number
+  bbox_ne_lng:      number
+  trip_id:          string | null
+  is_public:        boolean
+  created_at:       string
+  author:           { id: string; username: string; displayName: string; avatarUrl: string | null }
+  geojson?:         GeoJSON.Geometry
+}
+
+export const tracksApi = {
+  list: (params: Record<string, unknown>) =>
+    api.get<{ data: Track[]; page: number; hasMore: boolean }>('/tracks', { params }),
+  get: (id: string) => api.get<Track>(`/tracks/${id}`),
+  upload: (body: {
+    gpxContent:  string
+    title?:      string
+    description?: string
+    surfaceType?: SurfaceType
+    difficulty?:  Difficulty
+    tripId?:      string
+    isPublic?:    boolean
+  }) => api.post<Track>('/tracks', body, { timeout: 120_000 }),
+  update: (id: string, body: Record<string, unknown>) => api.patch<Track>(`/tracks/${id}`, body),
+  delete: (id: string) => api.delete(`/tracks/${id}`),
+  points: (id: string) => api.get<{ lat: number; lng: number; elevation: number | null; seq: number }[]>(`/tracks/${id}/points`),
+}

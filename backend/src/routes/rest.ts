@@ -1,7 +1,6 @@
-import { query, queryOne, pool } from '../config/db'
 import { Router, type Response } from 'express'
 import { z } from 'zod'
-import { query, queryOne } from '../config/db'
+import { query, queryOne, pool } from '../config/db'
 import { requireAuth, optionalAuth, type AuthRequest } from '../middleware/auth'
 import { reverseGeocode, searchPlaces } from '../services/geo'
 
@@ -37,26 +36,20 @@ feedRouter.post('/', requireAuth, async (req: AuthRequest, res: Response) => {
     content:      z.string().min(5).max(5000),
     lat:          z.number().optional(),
     lng:          z.number().optional(),
-    locationName: z.string().max(120).optional(),
+    locationName: z.string().max(200).optional(),
     countryCode:  z.string().max(2).optional(),
     tags:         z.array(z.string()).max(10).default([]),
   }).safeParse(req.body)
   if (!p.success) { res.status(400).json({ message: 'Validation error', errors: p.error.errors }); return }
-
   const { content, lat, lng, locationName, countryCode, tags } = p.data
-
-  // Insert and get the id
   const { rows } = await pool.query(
-    `INSERT INTO posts(author_id,content,lat,lng,location_name,country_code,tags)
-     VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    `INSERT INTO posts(author_id,content,lat,lng,location_name,country_code,tags) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
     [req.userId, content, lat, lng, locationName, countryCode, tags]
   )
-  const id = rows[0].id
-
-  // Fetch full post with author joined — same shape as GET /feed
+  // Return full post with author joined — same shape as GET responses
   const post = await queryOne(
     `SELECT ${POST_COLS} FROM posts p JOIN users u ON u.id=p.author_id WHERE p.id=$1`,
-    [id]
+    [rows[0].id]
   )
   res.status(201).json(post)
 })
@@ -69,21 +62,68 @@ feedRouter.delete('/:id', requireAuth, async (req: AuthRequest, res: Response) =
   res.json({ ok: true })
 })
 
-feedRouter.post('/:id/vote', requireAuth, async (req: AuthRequest, res: Response) => {
-  const { value } = req.body
-  if (![1,-1,0].includes(value)) { res.status(400).json({ message: 'Invalid value' }); return }
-  const pid = req.params.id, uid = req.userId!
-  if (value === 0) await query(`DELETE FROM votes WHERE user_id=$1 AND post_id=$2`, [uid, pid])
-  else await query(`INSERT INTO votes(user_id,post_id,value) VALUES($1,$2,$3) ON CONFLICT(user_id,post_id) DO UPDATE SET value=$3`, [uid, pid, value])
-  const ups = await queryOne<{count:string}>(`SELECT COUNT(*) FROM votes WHERE post_id=$1 AND value=1`, [pid])
-  const upvotes = parseInt(ups?.count ?? '0')
-  await query(`UPDATE posts SET upvotes=$1 WHERE id=$2`, [upvotes, pid])
-  res.json({ upvotes })
+// ── Reactions ─────────────────────────────────
+// POST /feed/:id/reactions  { type: 'helpful'|'inspiring'|'wow' }
+// DELETE /feed/:id/reactions  (remove reaction)
+// GET /feed/:id/reactions  (counts + user's current reaction)
+
+feedRouter.get('/:id/reactions', optionalAuth, async (req: AuthRequest, res: Response) => {
+  const counts = await query<{type:string;count:string}>(
+    `SELECT type, COUNT(*)::int AS count FROM reactions WHERE post_id=$1 GROUP BY type`,
+    [req.params.id]
+  )
+  const totals: Record<string,number> = { helpful: 0, inspiring: 0, wow: 0 }
+  counts.forEach(r => { totals[r.type] = Number(r.count) })
+  let userReaction: string | null = null
+  if (req.userId) {
+    const mine = await queryOne<{type:string}>(
+      `SELECT type FROM reactions WHERE post_id=$1 AND user_id=$2`,
+      [req.params.id, req.userId]
+    )
+    userReaction = mine?.type ?? null
+  }
+  res.json({ counts: totals, userReaction })
 })
+
+feedRouter.post('/:id/reactions', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { type } = req.body
+  if (!['helpful','inspiring','wow'].includes(type)) {
+    res.status(400).json({ message: 'type must be helpful, inspiring, or wow' }); return
+  }
+  // Upsert — switching reaction replaces the old one
+  await query(
+    `INSERT INTO reactions(post_id,user_id,type) VALUES($1,$2,$3)
+     ON CONFLICT(post_id,user_id) DO UPDATE SET type=$3, created_at=now()`,
+    [req.params.id, req.userId, type]
+  )
+  const counts = await query<{type:string;count:string}>(
+    `SELECT type, COUNT(*)::int AS count FROM reactions WHERE post_id=$1 GROUP BY type`,
+    [req.params.id]
+  )
+  const totals: Record<string,number> = { helpful: 0, inspiring: 0, wow: 0 }
+  counts.forEach(r => { totals[r.type] = Number(r.count) })
+  res.json({ counts: totals, userReaction: type })
+})
+
+feedRouter.delete('/:id/reactions', requireAuth, async (req: AuthRequest, res: Response) => {
+  await query(`DELETE FROM reactions WHERE post_id=$1 AND user_id=$2`, [req.params.id, req.userId])
+  const counts = await query<{type:string;count:string}>(
+    `SELECT type, COUNT(*)::int AS count FROM reactions WHERE post_id=$1 GROUP BY type`,
+    [req.params.id]
+  )
+  const totals: Record<string,number> = { helpful: 0, inspiring: 0, wow: 0 }
+  counts.forEach(r => { totals[r.type] = Number(r.count) })
+  res.json({ counts: totals, userReaction: null })
+})
+
+// ── Comments ──────────────────────────────────
 
 feedRouter.get('/:id/comments', async (req, res: Response) => {
   const rows = await query(
-    `SELECT c.id,c.content,c.upvotes,c.created_at,json_build_object('id',u.id,'username',u.username,'displayName',u.display_name,'avatarUrl',u.avatar_url) AS author FROM comments c JOIN users u ON u.id=c.author_id WHERE c.post_id=$1 ORDER BY c.created_at ASC`,
+    `SELECT c.id,c.content,c.upvotes,c.created_at,
+     json_build_object('id',u.id,'username',u.username,'displayName',u.display_name,'avatarUrl',u.avatar_url) AS author
+     FROM comments c JOIN users u ON u.id=c.author_id
+     WHERE c.post_id=$1 ORDER BY c.created_at ASC`,
     [req.params.id]
   )
   res.json(rows)
@@ -92,11 +132,18 @@ feedRouter.get('/:id/comments', async (req, res: Response) => {
 feedRouter.post('/:id/comments', requireAuth, async (req: AuthRequest, res: Response) => {
   const { content } = req.body
   if (!content?.trim()) { res.status(400).json({ message: 'Content required' }); return }
-  const c = await queryOne(
-    `INSERT INTO comments(post_id,author_id,content) VALUES($1,$2,$3) RETURNING *`,
+  const { rows } = await pool.query(
+    `INSERT INTO comments(post_id,author_id,content) VALUES($1,$2,$3) RETURNING id`,
     [req.params.id, req.userId, content.trim()]
   )
-  res.status(201).json(c)
+  // Return comment with author joined
+  const comment = await queryOne(
+    `SELECT c.id,c.content,c.upvotes,c.created_at,
+     json_build_object('id',u.id,'username',u.username,'displayName',u.display_name,'avatarUrl',u.avatar_url) AS author
+     FROM comments c JOIN users u ON u.id=c.author_id WHERE c.id=$1`,
+    [rows[0].id]
+  )
+  res.status(201).json(comment)
 })
 
 feedRouter.delete('/:postId/comments/:commentId', requireAuth, async (req: AuthRequest, res: Response) => {
@@ -236,7 +283,7 @@ tripsRouter.post('/:id/waypoints', requireAuth, async (req: AuthRequest, res: Re
   const p = z.object({
     lat:          z.number(),
     lng:          z.number(),
-    locationName: z.string().max(120).optional(),
+    locationName: z.string().max(200).optional(),
     arrivedAt:    z.string().datetime().optional(),
     note:         z.string().max(1000).optional(),
   }).safeParse(req.body)

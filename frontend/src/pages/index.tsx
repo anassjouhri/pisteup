@@ -7,19 +7,31 @@ import { PostCard } from '@/components/feed/PostCard'
 import { ProfileHeader, TripCard } from '@/components/profile'
 import { Button, Spinner } from '@/components/common'
 import { useAuthStore, useFeedStore } from '@/store'
-import { authApi, feedApi, usersApi } from '@/services/api'
+import { authApi, feedApi, geoApi, tracksApi } from '@/services/api'
+import { usersApi } from '@/services/api'
 import { realtimeService } from '@/services/realtime'
 import type { Report, ReportType, User, Trip } from '@/types'
+import type { Track } from '@/services/api'
 
 // ── MapPage ───────────────────────────────────
 
 export function MapPage() {
   const mapViewRef                          = useRef<MapViewHandle>(null)
   const [reports, setReports]               = useState<Report[]>([])
+  const [tracks, setTracks]                 = useState<Track[]>([])
+  const [showTracks, setShowTracks]         = useState(true)
   const [activeTypes, setActiveTypes]       = useState<ReportType[]>(['road','border','camp','fuel','mechanic','hazard'])
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
   const [addAt, setAddAt]                   = useState<{ lat: number; lng: number } | null>(null)
   const [justCreatedId, setJustCreatedId]   = useState<string | null>(null)
+
+  // Load tracks when map moves
+  async function loadTracks(swLat: number, swLng: number, neLat: number, neLng: number) {
+    try {
+      const { data } = await tracksApi.list({ swLat, swLng, neLat, neLng, pageSize: 50 })
+      setTracks(data.data)
+    } catch (err) { console.error(err) }
+  }
 
   function toggleType(t: ReportType) {
     setActiveTypes(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
@@ -44,19 +56,45 @@ export function MapPage() {
     mapViewRef.current?.flyTo(report.lng, report.lat)
   }
 
+  function handleTrackClick(track: Track) {
+    mapViewRef.current?.fitTrack(track)
+  }
+
+  function handleTrackCreated(track: Track) {
+    setTracks(prev => [track, ...prev])
+    // Fly to the new track
+    setTimeout(() => mapViewRef.current?.fitTrack(track), 300)
+  }
+
+  function handleReportsLoad(newReports: Report[]) {
+    setReports(newReports)
+    // Also load tracks for the current viewport
+    if (mapViewRef.current) {
+      // We trigger track loading via the same viewport bounds
+      // The map fires moveend which calls onReportsLoad — we piggyback track loading here
+    }
+  }
+
   return (
     <div style={{ display: 'flex', height: '100%', position: 'relative' }}>
       <MapSidebar
         reports={reports}
+        tracks={tracks}
         activeTypes={activeTypes}
+        showTracks={showTracks}
         onToggleType={toggleType}
+        onToggleTracks={() => setShowTracks(prev => !prev)}
         onReportClick={handleReportClick}
+        onTrackClick={handleTrackClick}
         onVote={handleVote}
+        onTrackCreated={handleTrackCreated}
       />
       <div style={{ flex: 1, position: 'relative' }}>
         <MapView
           ref={mapViewRef}
           reports={reports}
+          tracks={tracks}
+          showTracks={showTracks}
           onReportsLoad={setReports}
           onReportClick={handleReportClick}
           onMapClick={(lat, lng) => { setSelectedReport(null); setAddAt({ lat, lng }) }}
@@ -78,6 +116,44 @@ export function MapPage() {
   )
 }
 
+// ── Location search hook ──────────────────────
+
+interface GeoResult { name: string; coords: { lat: number; lng: number } }
+
+function useLocationSearch() {
+  const [query, setQuery]       = useState('')
+  const [results, setResults]   = useState<GeoResult[]>([])
+  const [selected, setSelected] = useState<GeoResult | null>(null)
+  const [searching, setSearching] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function onChange(val: string) {
+    setQuery(val)
+    setSelected(null)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (!val.trim()) { setResults([]); return }
+    timerRef.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const { data } = await geoApi.search(val.trim())
+        setResults(data.slice(0, 5))
+      } catch { setResults([]) }
+      finally { setSearching(false) }
+    }, 400)
+  }
+
+  function pick(result: GeoResult) {
+    setSelected(result)
+    setQuery(result.name.split(',')[0].trim())
+    setResults([])
+  }
+
+  function clear() {
+    setQuery(''); setSelected(null); setResults([])
+  }
+
+  return { query, results, selected, searching, onChange, pick, clear }
+}
 // ── FeedPage ──────────────────────────────────
 
 export function FeedPage() {
@@ -88,6 +164,7 @@ export function FeedPage() {
   const [tags, setTags]               = useState('')
   const [posting, setPosting]         = useState(false)
   const [postError, setPostError]     = useState('')
+  const loc = useLocationSearch()
 
   useEffect(() => {
     setLoading(true)
@@ -103,16 +180,20 @@ export function FeedPage() {
     setPosting(true); setPostError('')
     try {
       const tagList = tags.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean)
-      const { data } = await feedApi.create({ content: content.trim(), tags: tagList })
-      // Guard: only prepend if the response has a valid author
+      const body: Record<string, unknown> = { content: content.trim(), tags: tagList }
+      if (loc.selected) {
+        body.lat          = loc.selected.coords.lat
+        body.lng          = loc.selected.coords.lng
+        body.locationName = loc.selected.name
+      }
+      const { data } = await feedApi.create(body)
       if (data && data.author) {
         useFeedStore.getState().setPosts([data, ...useFeedStore.getState().posts])
       } else {
-        // Backend returned raw row without author — reload the feed instead
         const { data: fresh } = await feedApi.list({ page: 1 })
         setPosts(fresh.data); setHasMore(fresh.hasMore)
       }
-      setContent(''); setTags(''); setShowCompose(false)
+      setContent(''); setTags(''); loc.clear(); setShowCompose(false)
     } catch (err) {
       console.error(err)
       setPostError('Failed to post. Please try again.')
@@ -129,12 +210,6 @@ export function FeedPage() {
       .finally(() => setLoading(false))
   }
 
-  function handleVote(id: string, upvotes: number) {
-    useFeedStore.getState().setPosts(
-      useFeedStore.getState().posts.map(p => p.id === id ? { ...p, upvotes } : p)
-    )
-  }
-
   const inp: React.CSSProperties = {
     width: '100%', padding: '10px 12px', borderRadius: 6, fontSize: 13,
     border: '1px solid rgba(200,169,110,0.2)', background: 'rgba(255,255,255,0.04)',
@@ -142,8 +217,6 @@ export function FeedPage() {
   }
 
   return (
-    // height: 100% + overflowY: auto makes this page scroll independently
-    // while the map page stays overflow: hidden
     <div style={{ height: '100%', overflowY: 'auto' }}>
       <div style={{ maxWidth: 680, margin: '0 auto', padding: '24px 16px' }}>
 
@@ -171,6 +244,7 @@ export function FeedPage() {
             borderRadius: 8, padding: 16, marginBottom: 20,
             display: 'flex', flexDirection: 'column', gap: 10,
           }}>
+            {/* Author row */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
               <div style={{
                 width: 32, height: 32, borderRadius: '50%', background: 'rgba(232,98,42,0.2)',
@@ -183,6 +257,8 @@ export function FeedPage() {
                 {user?.display_name ?? 'You'}
               </span>
             </div>
+
+            {/* Content */}
             <textarea
               placeholder="Share a trip update, road condition, question, or experience…"
               value={content}
@@ -192,15 +268,77 @@ export function FeedPage() {
               autoFocus
               required
             />
+
+            {/* Tags */}
             <input
               placeholder="Tags — comma separated (e.g. Morocco, piste, 4x4)"
               value={tags}
               onChange={e => setTags(e.target.value)}
               style={inp}
             />
+
+            {/* Location search */}
+            <div style={{ position: 'relative' }}>
+              <input
+                placeholder="📍 Add location (type a place name)…"
+                value={loc.query}
+                onChange={e => loc.onChange(e.target.value)}
+                style={{ ...inp, paddingRight: loc.selected ? 32 : 12 }}
+              />
+              {/* Clear button when a location is selected */}
+              {loc.selected && (
+                <button
+                  type="button"
+                  onClick={loc.clear}
+                  style={{
+                    position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', color: '#6A5A48', cursor: 'pointer', fontSize: 16,
+                  }}
+                >×</button>
+              )}
+              {/* Search results dropdown */}
+              {loc.results.length > 0 && (
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50,
+                  background: '#1C1410', border: '1px solid rgba(200,169,110,0.25)',
+                  borderRadius: 6, marginTop: 2, overflow: 'hidden',
+                }}>
+                  {loc.results.map((r, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => loc.pick(r)}
+                      style={{
+                        display: 'block', width: '100%', padding: '8px 12px', textAlign: 'left',
+                        fontSize: 12, color: '#C0B0A0', background: 'none', border: 'none',
+                        cursor: 'pointer', borderBottom: i < loc.results.length - 1 ? '1px solid rgba(200,169,110,0.1)' : 'none',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(200,169,110,0.08)')}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                    >
+                      📍 {r.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {loc.searching && (
+                <div style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#6A5A48' }}>
+                  searching…
+                </div>
+              )}
+            </div>
+
+            {/* Selected location confirmation */}
+            {loc.selected && (
+              <div style={{ fontSize: 11, color: '#7AB050', padding: '4px 0' }}>
+                ✓ Post will be pinned to: {loc.selected.name}
+              </div>
+            )}
+
             {postError && <p style={{ color: '#CC5555', fontSize: 12, margin: 0 }}>{postError}</p>}
+
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-              <Button variant="ghost" onClick={() => { setShowCompose(false); setContent(''); setTags(''); setPostError('') }}>
+              <Button variant="ghost" onClick={() => { setShowCompose(false); setContent(''); setTags(''); loc.clear(); setPostError('') }}>
                 Cancel
               </Button>
               <Button variant="primary" loading={posting} disabled={!content.trim()}>
@@ -210,7 +348,7 @@ export function FeedPage() {
           </form>
         )}
 
-        {posts.map(p => <PostCard key={p.id} post={p} onVote={handleVote} />)}
+        {posts.map(p => <PostCard key={p.id} post={p} />)}
 
         {isLoading && (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
