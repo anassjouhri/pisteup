@@ -25,6 +25,10 @@ export function MapPage() {
   const [addAt, setAddAt]                   = useState<{ lat: number; lng: number } | null>(null)
   const [justCreatedId, setJustCreatedId]   = useState<string | null>(null)
 
+  useEffect(() => {
+    console.log('Tracks loaded:', tracks.length, tracks)
+  }, [tracks])
+
   // Load tracks when map moves
   async function loadTracks(swLat: number, swLng: number, neLat: number, neLng: number) {
     try {
@@ -90,15 +94,18 @@ export function MapPage() {
         onTrackCreated={handleTrackCreated}
       />
       <div style={{ flex: 1, position: 'relative' }}>
-        <MapView
-          ref={mapViewRef}
-          reports={reports}
-          tracks={tracks}
-          showTracks={showTracks}
-          onReportsLoad={setReports}
-          onReportClick={handleReportClick}
-          onMapClick={(lat, lng) => { setSelectedReport(null); setAddAt({ lat, lng }) }}
-        />
+
+      <MapView
+        ref={mapViewRef}
+        reports={reports}
+        tracks={tracks}
+        showTracks={showTracks}
+        onReportsLoad={setReports}
+        onTracksLoad={setTracks}        // ← add this
+        onReportClick={handleReportClick}
+        onMapClick={(lat, lng) => { setSelectedReport(null); setAddAt({ lat, lng }) }}
+      />
+
         {selectedReport && (
           <ReportPopup report={selectedReport} onClose={() => setSelectedReport(null)} />
         )}

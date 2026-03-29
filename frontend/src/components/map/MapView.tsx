@@ -27,6 +27,7 @@ interface MapViewProps {
   tracks: Track[]
   showTracks: boolean
   onReportsLoad: (reports: Report[]) => void
+  onTracksLoad: (tracks: Track[]) => void
 }
 
 function toGeoJSON(reps: Report[]): GeoJSON.FeatureCollection {
@@ -43,12 +44,12 @@ function toGeoJSON(reps: Report[]): GeoJSON.FeatureCollection {
 }
 
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(
-  function MapView({ onReportClick, onMapClick, reports, tracks, showTracks, onReportsLoad }, ref) {
-    const containerRef = useRef<HTMLDivElement>(null)
-    const mapRef       = useRef<maplibregl.Map | null>(null)
-    const reportsRef   = useRef<Report[]>(reports)
-    const tracksRef    = useRef<Track[]>(tracks)
-    const sourceReady  = useRef(false)
+  function MapView({ onReportClick, onMapClick, reports, tracks, showTracks, onReportsLoad, onTracksLoad }, ref) {
+    const containerRef  = useRef<HTMLDivElement>(null)
+    const mapRef        = useRef<maplibregl.Map | null>(null)
+    const reportsRef    = useRef<Report[]>(reports)
+    const tracksRef     = useRef<Track[]>(tracks)
+    const sourceReady   = useRef(false)
     const trackLayerIds = useRef<string[]>([])
     const { setCenter } = useMapStore()
 
@@ -85,7 +86,22 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
       } catch (err) { console.error('Failed to load reports:', err) }
     }, [onReportsLoad])
 
-    // Update reports GeoJSON source
+    const loadTracks = useCallback(async (map: maplibregl.Map) => {
+      const zoom = map.getZoom()
+      const b    = map.getBounds()
+      if (!b) return
+      try {
+        // Below zoom 5 — fetch all tracks globally so they always appear on load
+        const params = zoom < 5 ? { pageSize: 50 } : {
+          swLat: b.getSouth(), swLng: b.getWest(),
+          neLat: b.getNorth(), neLng: b.getEast(), pageSize: 50,
+        }
+        const { data } = await tracksApi.list(params)
+        onTracksLoad(data.data)
+      } catch (err) { console.error('Failed to load tracks:', err) }
+    }, [onTracksLoad])
+
+    // Update reports GeoJSON source whenever reports prop changes
     useEffect(() => {
       const map = mapRef.current
       if (!map || !sourceReady.current) return
@@ -93,29 +109,28 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
       source?.setData(toGeoJSON(reports))
     }, [reports])
 
-    // Render tracks as line layers
+    // Render tracks as line layers whenever tracks or showTracks changes
     useEffect(() => {
       const map = mapRef.current
       if (!map || !sourceReady.current) return
 
-      // Remove old track layers and sources
+      // Remove all existing track layers and sources
       trackLayerIds.current.forEach(id => {
-        if (map.getLayer(id))   map.removeLayer(id)
         if (map.getLayer(id + '-outline')) map.removeLayer(id + '-outline')
-        if (map.getSource(id))  map.removeSource(id)
+        if (map.getLayer(id))             map.removeLayer(id)
+        if (map.getSource(id))            map.removeSource(id)
       })
       trackLayerIds.current = []
 
       if (!showTracks || tracks.length === 0) return
 
-      // Add each track as its own source + layer
       tracks.forEach(async (track, i) => {
         const sourceId = `track-${track.id}`
         if (map.getSource(sourceId)) return
 
         try {
           const { data } = await tracksApi.get(track.id)
-          if (!data.geojson || !map.getSource) return
+          if (!data.geojson) return
 
           map.addSource(sourceId, {
             type: 'geojson',
@@ -124,7 +139,6 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
 
           const color = TRACK_COLORS[i % TRACK_COLORS.length]
 
-          // Outline (thicker, semi-transparent)
           map.addLayer({
             id:     sourceId + '-outline',
             type:   'line',
@@ -133,7 +147,6 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
             paint:  { 'line-color': '#000', 'line-width': 5, 'line-opacity': 0.25 },
           })
 
-          // Main line
           map.addLayer({
             id:     sourceId,
             type:   'line',
@@ -142,7 +155,6 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
             paint:  { 'line-color': color, 'line-width': 3, 'line-opacity': 0.9 },
           })
 
-          // Click handler
           map.on('click', sourceId, (e) => {
             const t = tracksRef.current.find(t => t.id === track.id)
             if (!t) return
@@ -158,7 +170,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
                     ${t.surface_type ? ` · ${t.surface_type}` : ''}
                     ${t.difficulty ? ` · ${t.difficulty}` : ''}
                   </div>
-                  ${t.description ? `<div style="font-size:12px;margin-top:6px;color:#555">${t.description.slice(0,120)}${t.description.length > 120 ? '…' : ''}</div>` : ''}
+                  ${t.description ? `<div style="font-size:12px;margin-top:6px;color:#555">${t.description.slice(0,120)}${t.description.length>120?'…':''}</div>` : ''}
                   <div style="font-size:11px;color:#888;margin-top:4px">by ${t.author.displayName}</div>
                 </div>
               `)
@@ -169,10 +181,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
           map.on('mouseleave', sourceId, () => { map.getCanvas().style.cursor = '' })
 
           trackLayerIds.current.push(sourceId)
-        } catch (err) { console.error('Failed to load track:', err) }
+        } catch (err) { console.error('Failed to load track geometry:', err) }
       })
     }, [tracks, showTracks])
 
+    // Init map
     useEffect(() => {
       if (!containerRef.current || mapRef.current) return
 
@@ -201,14 +214,19 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
           paint: {
             'circle-color': ['step', ['get', 'point_count'], '#C8A96E', 10, '#E8622A', 30, '#CC3333'],
             'circle-radius': ['step', ['get', 'point_count'], 20, 10, 26, 30, 34],
-            'circle-opacity': 0.92, 'circle-stroke-width': 2, 'circle-stroke-color': 'rgba(255,255,255,0.8)',
+            'circle-opacity': 0.92, 'circle-stroke-width': 2,
+            'circle-stroke-color': 'rgba(255,255,255,0.8)',
           },
         })
 
         map.addLayer({
           id: 'cluster-count', type: 'symbol', source: 'reports',
           filter: ['has', 'point_count'],
-          layout: { 'text-field': '{point_count_abbreviated}', 'text-size': 13, 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'] },
+          layout: {
+            'text-field': '{point_count_abbreviated}',
+            'text-size':  13,
+            'text-font':  ['Noto Sans Bold'],
+          },
           paint: { 'text-color': '#fff' },
         })
 
@@ -217,12 +235,16 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
           filter: ['!', ['has', 'point_count']],
           paint: {
             'circle-color': ['get', 'color'], 'circle-radius': 8,
-            'circle-stroke-width': 2, 'circle-stroke-color': 'rgba(255,255,255,0.85)', 'circle-opacity': 0.95,
+            'circle-stroke-width': 2, 'circle-stroke-color': 'rgba(255,255,255,0.85)',
+            'circle-opacity': 0.95,
           },
         })
 
         sourceReady.current = true
+
+        // Load both reports and tracks on initial map load
         await loadReports(map)
+        await loadTracks(map)
       })
 
       map.on('click', 'clusters', (e) => {
@@ -259,6 +281,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
         const c = map.getCenter()
         setCenter([c.lng, c.lat], map.getZoom())
         loadReports(map)
+        loadTracks(map)
       })
 
       mapRef.current = map
@@ -266,6 +289,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
+    // Real-time new report
     useEffect(() => {
       const unsub = realtimeService.on('report:new', () => {
         if (mapRef.current) loadReports(mapRef.current)

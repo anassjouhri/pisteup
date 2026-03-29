@@ -228,9 +228,17 @@ export function UploadTrackModal({ open, onClose, onCreated }: Props) {
             <Button variant="ghost" onClick={() => setPreview(null)}>← Change file</Button>
             <div style={{ display: 'flex', gap: 8 }}>
               <Button variant="ghost" onClick={resetAndClose}>Cancel</Button>
-              <Button variant="primary" loading={uploading} onClick={handleUpload} disabled={!title.trim()}>
-                Share track
-              </Button>
+
+                <Button variant="primary" loading={uploading} onClick={handleUpload} disabled={!title.trim()}>
+                {uploading ? 'Uploading…' : 'Share track'}
+                </Button>
+
+                {uploading && (
+                <p style={{ fontSize: 11, color: '#8A7A66', textAlign: 'center', margin: 0 }}>
+                    Processing large file, this may take a moment…
+                </p>
+                )}
+
             </div>
           </div>
         </div>
